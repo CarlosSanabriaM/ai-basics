@@ -1,0 +1,475 @@
+---
+title: "Práctica Obligatoria Aprendizaje Automático"
+author: "Carlos Sanabria Miranda"
+date: "23/12/2018"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(caret)
+```
+
+```{r}
+geneLevel <- read.csv('data.csv',stringsAsFactors = F) 
+label <- read.csv('labels.csv',stringsAsFactors = F)
+
+tcga <- merge(geneLevel, label, sort = F) 
+tcga$X <- NULL
+```
+
+```{r}
+# Se van a usar 100 variables, elegidas en función del UO
+set.seed(250707)
+tcga.filtered <- tcga[,c(sample(ncol(tcga)-1,100),ncol(tcga))]
+tcga.filtered$Class <- as.factor(tcga.filtered$Class)
+```
+
+```{r}
+head(tcga.filtered)
+```
+
+# Esquema de evaluación
+Para evaluar los modelos se hará primeramente una división en entrenamiento/test, de 80%/20% respectivamente. Esto nos permitirá realizar una validación externa, para ver cómo de bueno es realmente el modelo con datos que no ha visto durante el proceso de entrenamiento.
+
+```{r}
+set.seed(107)
+inTrain <- createDataPartition(
+  y = tcga.filtered$Class,
+  p = .80, # 80% instancias para entrenamiento
+  list = FALSE
+)
+training <- tcga.filtered[ inTrain,]
+testing  <- tcga.filtered[-inTrain,]
+# Revisamos que el número de instancias totales es el mismo
+nrow(training)+nrow(testing)
+```
+
+```{r}
+# Eliminamos las columnas con todo 0, para que no haya problemas con ciertos algoritmos
+training <- training[,apply(tcga.filtered,2,function(x){all(x!=0)})] 
+testing <- testing[,apply(tcga.filtered,2,function(x){all(x!=0)})]
+```
+
+Para la validación interna he seleccionado Bootstrap con ponderación de instancias y 10 repeticiones, ya que considero que el conjunto de datos del que se dispone es pequeño (801 instancias). Bootstrap es muy adecuado para conjuntos de datos pequeños, y ponderando las instancias se reduce el sesgo. Con 10 repeticiones evitamos que los resultados dependan enteramente de una selección de los datos determinada.
+
+```{r}
+ctrl <- trainControl(
+  method = "boot632", # bootstrap con ponderación de instancias
+  number = 10 # 10 repeticiones
+)
+```
+
+# Métrica utilizada para comparar los modelos
+
+```{r}
+cat('Número de datos de cada clase: \n')
+summary(tcga.filtered$Class)
+
+cat('\nPorcentaje de datos de cada clase: \n')
+summary(tcga.filtered$Class)/sum(summary(tcga.filtered$Class))
+```
+
+Si echamos un vistazo al número de datos que hay por cada clase, podemos ver como están ligeramente desbalanceados. La clase BCRA tiene 300 datos, mientras que la clase COAD 78. Por tanto, para comparar los modelos voy a utilizar la métrica Kappa, que me permite saber cómo de bueno es el clasificador en comparación con una predicción basada en la frecuencia de las clases. Además, dicha métrica tiene en cuenta también el valor del porcentaje de acierto.
+
+# Generación de los modelos
+
+```{r}
+# Creamos una función para ver los resultados de la validación interna
+internalValidation <- function(model){
+  print(model)
+  print(model$results[rownames(model$bestTune),1:4])
+}
+```
+
+```{r}
+# Creamos una función para ver los resultados de la validación externa
+externalValidation <- function(model, testingData = testing){
+  print(confusionMatrix(predict(model,testingData),testingData$Class))
+}
+```
+
+## Árboles de decisión (DT)
+### C4.5
+Vamos a probar primero con un árbol de decisión que utiliza el algoritmo C4.5 (usa la métrica Gain Ratio para generar el árbol).
+
+```{r}
+set.seed(725) 
+c4.5Fit <- train(
+  Class ~ .,
+  data = training,
+  method = "J48",
+  tuneLength = 7,
+  trControl = ctrl,
+  metric = "Kappa"
+)
+```
+
+```{r}
+# Resultados validación interna
+internalValidation(c4.5Fit)
+```
+
+El máximo valor de C es 0.5, y a mayor valor de M, peores resultados. Por tanto, los valores C = 0.255 and M = 1 son de los mejores posibles.
+
+```{r}
+# Resultados validación externa
+externalValidation(c4.5Fit)
+```
+
+**Resultados:** Validación interna=[Accuracy=0.8859330 y Kappa=0.8494376]. Validación externa=[Accuracy=0.8302 y Kappa=0.7776].
+
+### CART
+Vamos a probar ahora con un árbol de decisión que utiliza el algoritmo CART (usa la métrica Gini para generar el árbol).
+
+#### Rpart
+Primero probaremos con la versión rpart, que utiliza el parámetro cp (solo se introducirá un nodo en el árbol cuando permita que se reduzca el error en al menos el valor de cp).
+
+```{r}
+set.seed(725) 
+rpartFit <- train(
+  Class ~ .,
+  data = training,
+  method = "rpart",
+  tuneLength = 10,
+  trControl = ctrl,
+  metric = "Kappa"
+)
+```
+
+```{r}
+# Resultados validación interna
+internalValidation(rpartFit)
+```
+
+A medida que se aumenta el cp, los resultados empeoran. El mejor cp es 0.
+
+```{r}
+# Resultados validación externa
+externalValidation(rpartFit)
+```
+
+**Resultados:** Validación interna=[Accuracy=0.8566588 y Kappa=0.8107228]. Validación externa=[Accuracy=0.8365 y Kappa=0.7849].  
+Los resultados en validación interna son peores que los del árbol generado con el algoritmo C4.5, pero en validación externa son mejores.
+
+#### Rpart2
+Ahora probamos con la versión rpart2, que utiliza el parámetro maxdepth (controla la profundidad máxima del árbol).
+
+```{r}
+set.seed(725) 
+rpart2Fit <- train(
+  Class ~ .,
+  data = training,
+  method = "rpart2",
+  tuneLength = 10,
+  trControl = ctrl,
+  metric = "Kappa"
+)
+```
+
+```{r}
+# Resultados validación interna
+internalValidation(rpart2Fit)
+```
+
+A medida que se aumenta la profundidad, los resultados mejoran, pero la máxima profundidad permitida para este árbol es 14, que tiene los mismos resultados que el árbol con profundidad 12 (que es el valor final seleccionado para el modelo).
+
+```{r}
+# Resultados validación externa
+externalValidation(rpart2Fit)
+```
+
+**Resultados:** Validación interna=[Accuracy=0.8555245 y Kappa=0.8091635]. Validación externa=[Accuracy=0.8176 y Kappa=0.7591].  
+Los resultados, tanto en validación interna como externa, son peores que los de los otros 2 árboles.
+
+### Conclusiones árboles de decisión
+Se puede ver como el mejor árbol de decisión en la validación externa es el que utilizar el algoritmo CART con la versión rpart. Este será por tanto el modelo seleccionado de árboles de decisión.
+
+## Vecinos más cercanos (kNN)
+
+```{r}
+set.seed(725) 
+knnFit <- train(
+  Class ~ .,
+  data = training,
+  method = "knn",
+  trControl = ctrl,
+  tuneLength = 8, # valor de k
+  metric = "Kappa"
+)
+```
+
+```{r}
+# Resultados validación interna
+internalValidation(knnFit)
+```
+
+Los resultados van en aumento a medida que se aumenta k, salvo a partir de k=15, que van en descenso. k=15 es el mejor valor para dicho parámetro.
+
+```{r}
+# Resultados validación externa
+externalValidation(knnFit)
+```
+
+**Resultados:** Validación interna=[Accuracy=0.9818124 y Kappa=0.9759346]. Validación externa=[Accuracy=0.956 y Kappa=0.9419].
+
+## Redes neuronales (NN)
+
+```{r}
+plotNNErrorEvolution <- function(nnModel){
+  ggplot() + geom_line(aes(x=1:length(nnModel$finalModel$IterativeFitError), 
+                           y=nnModel$finalModel$IterativeFitError)) +
+  xlab("Iteraciones") + ylab("Error") 
+}
+```
+
+### 1 capa oculta
+Primeramente, vamos a probar con un red neuronal de una sola capa oculta.
+
+```{r}
+set.seed(472) 
+nn1LFit <- train(
+  Class ~ .,
+  data = training,
+  method = "mlp",
+  trControl = ctrl,
+  tuneGrid = data.frame(size=seq(9,25,4)),
+  maxit = 300,
+  metric = "Kappa"
+)
+```
+
+```{r}
+# Resultados validación interna
+internalValidation(nn1LFit)
+```
+
+En la validación interna los resultados son desastrosos. Aunque se aumente el número de neuronas de la capa oculta los resultados son los mismos. El valor de Kappa es 0 y el mayor Accuracy ronda el 0.37, lo que quiere decir que la red lo que hace es decir siempre que la clase es la clase mayoritaria en los datos de entrenamiento (BCRA, que es la clase del 37% de las instancias de entrenamiento). 
+
+```{r}
+# Porcentaje de datos de cada clase en los datos de entrenamiento
+summary(training$Class)/sum(summary(training$Class)) 
+```
+
+Podemos apreciar cómo siempre predice que la clase es BCRA mirando la matriz de confusión con los datos de entrenamiento.
+
+```{r}
+confusionMatrix(predict(nn1LFit,training),training$Class)
+```
+
+Vamos a observar cómo se ha ido modificando el error a lo largo de los epochs/iteraciones de la red, para ver qué puede causar tan malos resultados.
+
+```{r}
+# Dibujamos la evolución del error a lo largo de las iteraciones de la red
+plotNNErrorEvolution(nn1LFit)
+```
+
+Se puede ver como hay muchos picos en el error. Esto lo podemos intentar solucionar disminuyendo el valor de la tasa de aprendizaje, para que así la red no realice variaciones muy grandes de los pesos. Vamos a probar primero con una tasa de aprendizaje de 0.03.
+
+```{r}
+set.seed(472) 
+nn1L_lr003_Fit <- train(
+  Class ~ .,
+  data = training,
+  method = "mlp",
+  trControl = ctrl,
+  tuneGrid = data.frame(size=seq(9,29,4)),
+  maxit = 300,
+  metric = "Kappa",
+  learnFuncParams = c(0.03,0) # tasa aprendizaje = 0.03
+)
+```
+
+```{r}
+# Resultados validación interna
+internalValidation(nn1L_lr003_Fit)
+```
+
+```{r}
+# Dibujamos la evolución del error a lo largo de las iteraciones de la red
+plotNNErrorEvolution(nn1L_lr003_Fit)
+```
+
+```{r}
+# Resultados validación externa
+externalValidation(nn1L_lr003_Fit)
+```
+
+Como en la red anterior el error seguía teniendo ciertos picos, aunque da unos resultados muy buenos, vamos a probar con una tasa de aprendizaje menor.
+
+```{r}
+set.seed(472) 
+nn1L_lr001_Fit <- train(
+  Class ~ .,
+  data = training,
+  method = "mlp",
+  trControl = ctrl,
+  tuneGrid = data.frame(size=seq(9,29,4)),
+  maxit = 300,
+  metric = "Kappa",
+  learnFuncParams = c(0.01,0) # tasa aprendizaje = 0.01
+)
+```
+
+```{r}
+# Resultados validación interna
+internalValidation(nn1L_lr001_Fit)
+```
+
+```{r}
+# Dibujamos la evolución del error a lo largo de las iteraciones de la red
+plotNNErrorEvolution(nn1L_lr001_Fit)
+```
+
+Aunque le demos más de 300 iteraciones, el error practicamente no va a disminuir más.
+
+```{r}
+# Resultados validación externa
+externalValidation(nn1L_lr001_Fit)
+```
+
+La red con una capa oculta de 29 neuronas y tasa de aprendizaje 0.01 es la mejor de todas.  
+**Resultados:** Validación interna=[Accuracy=0.9948937 y Kappa=0.9932118]. Validación externa=[Accuracy=0.9937 y Kappa=0.9917].
+
+No merece la pena probar con redes neuronales de más capas, dado que con una red neuronal de una capa obtenemos muy buenos resultados (dificilmente mejorables), y añadir más capas aumenta tanto la complejidad del entrenamiento como su duración.
+
+## Máquinas de vector soporte (SVM)
+Vamos a probar primero con un SVM lineal, a ver que resultados nos da.
+
+```{r}
+set.seed(627) 
+svmLinealFit <- train(
+  Class ~ .,
+  data = training,
+  method = "svmLinear", 
+  trControl = ctrl,
+  tuneGrid = data.frame(C=c(0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5)),
+  metric = "Kappa"
+)
+```
+
+```{r}
+# Resultados validación interna
+internalValidation(svmLinealFit)
+```
+
+Los valores de C mayores o iguales a 0.1 dan los mismos resultados, ya que el valor de $\alpha$ de los vectores soporte nunca toma valores mayores de 0.1.
+
+```{r}
+# Resultados validación externa
+externalValidation(svmLinealFit)
+```
+
+**Resultados:** Validación interna=[Accuracy=0.9963049 y Kappa=0.9950986]. Validación externa=[Accuracy=0.9874 y Kappa=0.9834].  
+Son muy buenos resultados, por lo que no merece la pena probar con un SVM no lineal.
+
+## Random Forest (RF)
+Este paradigma construye multitud de árboles de decisión, y a la hora de realizar una predicción devuelve la clase que es la moda (para problemas de clasificación, como el que estamos resolviendo) o la media (para problemas de regresión) de los valores devueltos por todos los árboles de decisión. Los árboles no se entrenan con todas las variables ni con todos los datos del conjunto de entrenamiento, sino que se les da un subconjunto aleatorio de las variables y de los datos. Esto genera diversidad en los árboles, que generalmente resulta en un mejor modelo.
+
+**Ventajas:**  
+
+* Al utilizar muchos árboles de decisión, reduce el riesgo de sobreajuste que tienen éstos.
+* Puede ser utilizado tanto para problemas de clasificación como de regresión.
+* Pocos parámetros a determinar, y fáciles de entender.
+* Son rápidos de entrenar.
+* Pueden tratar con variables discretas y numéricas.
+
+**Desventajas:**  
+
+* Los resultados no son tan interpretables como en los árboles de decisión.
+* Las predicciones son lentas si hay un gran número de árboles.
+
+El parámetro mtry representa el número de variables con las que se entrena cada árbol.
+
+```{r}
+set.seed(627) 
+rfFit <- train(
+  Class ~ .,
+  data = training,
+  method = "rf", 
+  trControl = ctrl,
+  tuneGrid = data.frame(mtry=seq(2,30,4)), # número de variables para cada árbol
+  metric = "Kappa"
+)
+```
+
+```{r}
+# Resultados validación interna
+internalValidation(rfFit)
+```
+
+```{r}
+rfFit$finalModel
+```
+
+El bosque generado consta de 500 árboles de decisión, cada uno de los cuales fue entrenado con 14 variables, en lugar de las 100 que tenemos.
+
+```{r}
+# Resultados validación externa
+externalValidation(rfFit)
+```
+
+**Resultados:** Validación interna=[Accuracy=0.9889284 y Kappa=0.9852872]. Validación externa=[Accuracy=0.9748 y Kappa=0.9666].
+
+# Comparación de los modelos
+Para comparar los modelos vamos a utilizar la métrica Kappa obtenida en la validación externa. 
+
+Modelos ordenados por el valor de Kappa:  
+
+Modelo                         | Kappa
+------------------------------ | -------------
+NN (1 capa)                    | 0.9917
+SVM                            | 0.9834
+Random forest                  | 0.9666
+kNN                            | 0.9419
+Árbol de decisión (CART rpart) | 0.7849
+
+```{r}
+kappaNN <- 0.9917
+kappaSVM <- 0.9834
+kappaRF <- 0.9666
+kappaKNN <- 0.9419
+kappaDT <- 0.7849
+```
+
+Los modelos con mayor valor Kappa son NN y SVM. Vamos a realizar un test binomial para ver si hay diferencias significaticas entre ellos.
+
+```{r}
+binomialTest <- function(percentageSuccess1, percentageSuccess2, testingData = testing){
+  binom.test(
+    round(c(percentageSuccess1, 1-percentageSuccess1)* # porcentaje de acierto y error 
+            nrow(testingData)), # multiplicado por el número de instancias
+                                # para obtener el número total de aciertos y fallos 
+    p = percentageSuccess2 # el porcentaje de acierto del modelo con el que comparar
+  ) 
+}
+```
+
+```{r}
+binomialTest(kappaNN, kappaSVM) # Comparación NN y SVM
+```
+
+El p-valor es $\ge$ 0.05, por lo que no hay una diferencia significativa entre NN y SVM.
+
+```{r}
+binomialTest(kappaNN, kappaRF) # Comparación NN y RF
+```
+
+El p-valor es $\ge$ 0.05, por lo que no hay una diferencia significativa entre NN y RF.
+
+```{r}
+binomialTest(kappaNN, kappaKNN) # Comparación NN y kNN
+```
+
+El p-valor es < 0.05, por lo que hay una diferencia significativa entre NN y kNN.
+
+# Interpretación de la comparación y elección del modelo
+Por tanto, entre los modelos NN, SVM y RF podemos observar como no hay diferencias significativas en el valor de Kappa, mientras que entre NN y kNN sí las hay. Como el árbol de decisión tiene menor valor Kappa que kNN, ni siquiera lo tenemos en cuenta para la comparación.
+
+La decisión de qué modelo escoger estará entonces entre NN, SVM y RF. El principio de la navaja de Ockham nos dice que, en condiciones similares, escojamos el modelo más simple. RF es el modelo más sencillo y fácil de interpretar, sin embargo, aunque los 3 modelos tengan un valor de Kappa similar, hay otras diferencias importantes entre ellos. 
+
+El modelo con menor tiempo de entrenamiento es, con gran diferencia, SVM, seguido de RF y de NN (que tiene un tiempo de entrenamiento muy alto en comparación con los otros). Además, RF es ligeramente más lento en las predicciones, dado que tiene que realizar la predicción en los 500 árboles. Otra ventaja más que tiene SVM es que escala bien para problemas de alta dimensionalidad, como es el caso de este problema. En estas pruebas hemos utilizado una versión reducida del problema, con apenas 100 variables de las 20500 que tiene realmente. Si consideramos que las 20500 variables son relevantes y deben usarse para entrenar el modelo, SVM sería un buen paradigma a utilizar, por lo explicado previamente. Tampoco hemos tenido la necesidad de utilizar una función de kernel, por lo que el SVM es, dentro de lo que cabe, simple. Además, en las NN hay muchos parámetros que ajustar, mientras que en RF y SVM (lineal) tenemos un único parámetro principal: en SVM (lineal) tenemos C, y en RF tenemos mtry (al menos en esta versión del algoritmo, ya que hay versiones más complejas con más parámetros).
+
+Por tanto, el modelo final seleccionado será el SVM. Es con gran diferencia el que tiene menor tiempo de entrenamiento, tarda menos que RF en realizar las predicciones, tiene pocos parámetros que ajustar, y tendrá menos problemas si se incrementa el número de variables.
